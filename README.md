@@ -1,8 +1,8 @@
 # MajuPilot
 
-MajuPilot is an evidence-backed Digital and AI Transformation advisor for Malaysian SMEs and the Exabytes advisory workflow. It turns a structured discovery interview into an inspectable Business Twin, deterministic diagnosis, capability-first recommendations, transformation scenarios, an advisor-reviewed Blueprint, a canonical private PDF, and a consented consultation handoff.
+MajuPilot is an evidence-backed Digital and AI Transformation advisor for Malaysian SMEs and technology-advisory teams. It turns a structured discovery interview into an inspectable Business Twin, deterministic diagnosis, capability-first recommendations, transformation scenarios, an advisor-reviewed Blueprint, a canonical private PDF, and a consented consultation handoff.
 
-Production: <https://majupilot-exabytes.vercel.app/>
+Production: <https://majupilot.vercel.app/>
 
 ## Product journey
 
@@ -24,7 +24,7 @@ flowchart LR
 - Five-step SME discovery with bounded, evidence-linked follow-up questions.
 - Editable Business Twin with confidence and source provenance.
 - Deterministic digital-maturity, AI-readiness, pain ranking, scenario, cost, value, and payback engines.
-- Capability-first recommendations mapped to a versioned Exabytes catalogue.
+- Capability-first recommendations mapped to a versioned service catalogue.
 - Live DeepSeek interpretation through Vercel AI Gateway, with strict schemas, budgets, safe telemetry, and deterministic fallbacks where permitted.
 - Five evidence-bounded advisor perspectives and a 16-section Transformation Blueprint.
 - Deterministic canonical PDF generation, private Supabase Storage, content hashes, and short-lived signed downloads.
@@ -44,7 +44,7 @@ flowchart TB
     UI[Next.js product interface] --> API[Versioned server routes]
     API --> Core[Provider-neutral deterministic core]
     Core --> Domain[Versioned contracts]
-    Core --> Pack[Exabytes domain pack]
+    Core --> Pack[provider domain pack]
     API --> DB[(Supabase Postgres and RLS)]
     API --> Storage[Private Supabase Storage]
     API -. bounded generation .-> Gateway[Vercel AI Gateway]
@@ -71,7 +71,7 @@ sme-growth-twin/               # canonical Next.js application root
 │   ├── components/            # UI by product workflow
 │   ├── core/                  # deterministic engines and services
 │   ├── domain/                # schemas and contracts
-│   ├── domain-packs/exabytes/ # versioned catalogue and provider policy
+│   ├── domain-packs/               # versioned provider catalogues and policy
 │   └── infrastructure/        # Supabase, AI, reports, outbox, persistence
 └── tests/                     # unit, integration, security, and release evidence
 ```
@@ -81,8 +81,8 @@ sme-growth-twin/               # canonical Next.js application root
 Prerequisites: Node.js 22.12 or newer, npm, and the configured `sme-growth-twin/.env.local` file.
 
 ```powershell
-git clone https://github.com/desanv01/majupilot-exabytes.git
-cd majupilot-exabytes\sme-growth-twin
+git clone https://github.com/desanv01/majupilot.git
+cd majupilot\sme-growth-twin
 npm ci
 npm run dev
 ```
