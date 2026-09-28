@@ -4,7 +4,7 @@ This directory is the canonical Next.js application root. MajuPilot combines the
 accepted assessment, Business Twin, deterministic diagnosis, recommendations,
 scenario and ROI modelling, advisor-reviewed Blueprint, canonical PDF reporting,
 Transformation Copilot, and durable consultation workflow in one product journey.
-The production deployment is <https://majupilot-exabytes.vercel.app/>.
+The production deployment is <https://majupilot.vercel.app/>.
 
 The accepted baseline adds one production-owned source for three fictional golden cases,
 scoped known-key load/reset controls, a persistent demo disclosure, exact A/B/C
