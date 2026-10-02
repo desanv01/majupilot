@@ -15,7 +15,9 @@ if (configuredBaseUrl) {
   baseUrl = parsedBaseUrl.toString().replace(/\/$/, "");
 }
 const artifactOverride = process.env.STAGE07_ARTIFACT_DIR?.trim();
-const functionalOnly = process.argv.includes("--functional");
+const hostedSmoke = process.argv.includes("--hosted-smoke");
+if (hostedSmoke && !configuredBaseUrl) throw new Error("Hosted smoke requires STAGE07_BASE_URL");
+const functionalOnly = hostedSmoke || process.argv.includes("--functional");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const cliStatus = spawnSync(process.execPath, ["node_modules/supabase/dist/supabase.js", "status", "-o", "env"], {
   cwd: process.cwd(), encoding: "utf8", windowsHide: true, maxBuffer: 4 * 1024 * 1024,
@@ -138,6 +140,14 @@ try {
   await navigate("/"); accessibility.push(await axe("home")); await checkLayout("/", 1440);
   await navigate("/assessment?new=1"); await poll("document.body.innerText.includes('Your business at a glance')", true); accessibility.push(await axe("assessment")); await checkLayout("/assessment", 1440);
   const originalDraft = await evaluate("localStorage.getItem('sme-growth-twin:assessment-draft:1.0.0')");
+  let originalGuest;
+  let originalGuestCookie;
+  if (hostedSmoke) {
+    originalGuest = await evaluate("fetch('/api/v2/guest/session',{method:'POST'}).then(async r=>{if(!r.ok)throw new Error('guest issue failed');return (await r.json()).data})");
+    await evaluate(`localStorage.setItem('majupilot:durable-journey:1.0.0',JSON.stringify({...${JSON.stringify(originalGuest)},leadIdempotencyKey:'lead:'+crypto.randomUUID()}))`);
+    originalGuestCookie = (await cdp("Network.getAllCookies")).cookies.find((cookie) => cookie.name === "__Host-majupilot_guest")?.value;
+    if (!originalGuestCookie) throw new Error("Real guest host cookie was not stored");
+  }
 
   await navigate("/");
   await evaluate("document.querySelector('[data-fixture-id=\"case-a\"]')?.click()");
@@ -160,11 +170,27 @@ try {
   const copilotBeforeTurn = await evaluate("document.querySelectorAll('.copilot-message.assistant').length");
   await evaluate(`(() => { const field=document.querySelector('#copilot-message'); const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set; setter.call(field,'Summarize the saved Business Twin for this fictional company.'); field.dispatchEvent(new Event('input',{bubbles:true})); field.form.requestSubmit(); })()`);
   await poll(`document.querySelectorAll('.copilot-message.assistant').length>${copilotBeforeTurn}`, true, 60_000);
+  await poll("!document.querySelector('.copilot-message.streaming') && document.querySelectorAll('.copilot-message.assistant:not(.draft)').length>1", true, 120_000);
   await cdp("Page.reload");
   await poll("document.readyState", "complete");
   await poll("Boolean(document.querySelector('#copilot-message:not([disabled])'))", true, 60_000);
   const copilotJourney = { openedFromBlueprint: true, turnCompleted: true, historyRestored: await evaluate("document.querySelectorAll('.copilot-message.user').length>=1") };
   if (!copilotJourney.historyRestored) throw new Error("Case A Copilot history did not restore");
+  if (hostedSmoke) {
+    const cookies = (await cdp("Network.getAllCookies")).cookies;
+    const realCookiePreserved = cookies.find((cookie) => cookie.name === "__Host-majupilot_guest")?.value === originalGuestCookie;
+    const demoCookieIsSeparate = Boolean(cookies.find((cookie) => cookie.name === "__Host-majupilot_demo_guest"));
+    await resetViaBanner();
+    const guestWorkRestored = await evaluate(`JSON.parse(localStorage.getItem('majupilot:durable-journey:1.0.0'))?.assessmentSessionId===${JSON.stringify(originalGuest.assessmentSessionId)}`);
+    const resumed = await evaluate("fetch('/api/v2/guest/session',{method:'PUT'}).then(async r=>{if(!r.ok)throw new Error('restored guest access failed');return (await r.json()).data})");
+    const restoredGuestAuthorized = resumed.assessmentSessionId === originalGuest.assessmentSessionId;
+    const evidence = { baseUrl, newAssessmentThenDemo: true, copilotJourney, realCookiePreserved, demoCookieIsSeparate, guestWorkRestored, restoredGuestAuthorized, homeReset, consoleErrors, failedRequests };
+    await writeFile(path.join(artifacts, "hosted-functional-evidence.json"), JSON.stringify(evidence, null, 2));
+    console.log(JSON.stringify(evidence, null, 2));
+    if (!realCookiePreserved || !demoCookieIsSeparate || !guestWorkRestored || !restoredGuestAuthorized || !Object.values(homeReset).every(Boolean) || consoleErrors.length || failedRequests.length) throw new Error("Hosted functional regressions failed");
+    await evaluate("Promise.all([fetch('/api/v2/guest/revoke',{method:'POST'}),fetch('/api/v2/guest/revoke',{method:'POST',headers:{'x-majupilot-workspace':'demo'}})])");
+    await cdp("Browser.close");
+  } else {
   await navigate("/blueprint");
   await poll("document.body.innerText.includes('Five advisor reviews')", true);
   await activateText("Request consultation"); await poll("location.pathname", "/consultation"); accessibility.push(await axe("consultation")); await checkLayout("/consultation", 1440);
@@ -253,6 +279,7 @@ try {
   console.log(JSON.stringify(evidence, null, 2));
   if (!casesMatch || !Object.values(copilotJourney).every(Boolean) || !Object.values(accountDemo).every(Boolean) || !receiptSafe || !Object.values(homeReset).every(Boolean) || !scopedReset || !headersPass || blueprintDurationMs >= 300_000 || consoleErrors.length || failedRequests.length || evidence.overlay) throw new Error("Stage 07 browser assertions failed");
   await cdp("Browser.close");
+  }
 } catch (error) {
   if (ws?.readyState === WebSocket.OPEN) {
     const id = 999999;
