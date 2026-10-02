@@ -9,6 +9,7 @@ import type { DiagnosticResult } from "@/domain/scoring";
 import { canonicalJson } from "@/core/reports/canonical-json";
 import { activeAccountCase } from "./account-case-scope";
 import { notifyAccountCaseLocalChange } from "./account-case-events";
+import { workspaceIdentity, workspaceRequest } from "./workspace-request";
 
 export const DURABLE_JOURNEY_STORAGE_KEY = "majupilot:durable-journey:1.0.0";
 
@@ -25,6 +26,7 @@ export type DurableArtifactIds = {
 
 export type DurableJourneyContext = {
   guestSessionId?: string;
+  expiresAt?: string;
   organizationId?: string;
   assessmentSessionId: string;
   artifactIds?: DurableArtifactIds;
@@ -97,19 +99,39 @@ export function matchesCopilotDeepLink(
   return true;
 }
 
-async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+async function json<T>(url: string, init?: RequestInit, storage?: Storage): Promise<T> {
+  const response = await fetch(url, workspaceRequest(init, storage));
   const payload = await response.json().catch(() => undefined) as { data?: T; error?: { code?: string } } | undefined;
   if (!response.ok || !payload?.data) throw new Error(payload?.error?.code ?? `request_${response.status}`);
   return payload.data;
 }
 
-async function ensureSession(storage: Storage) {
+const checkedGuests = new WeakMap<Storage, { id: string; checkedAt: number }>();
+
+async function ensureSession(storage: Storage, assertCurrent: () => void) {
   const existing = load(storage);
-  if (existing) return existing;
+  if (existing?.organizationId) return existing;
+  if (existing?.guestSessionId) {
+    const checked = checkedGuests.get(storage);
+    if (checked?.id === existing.guestSessionId && Date.now() - checked.checkedAt < 5 * 60_000 && (!existing.expiresAt || Date.parse(existing.expiresAt) > Date.now())) return existing;
+    try {
+      const resumed = await json<{ guestSessionId: string; assessmentSessionId: string; expiresAt?: string }>("/api/v2/guest/session", { method: "PUT" }, storage);
+      assertCurrent();
+      // A replaced cookie authorizes another assessment; never reuse this case's IDs.
+      if (resumed.guestSessionId === existing.guestSessionId && resumed.assessmentSessionId === existing.assessmentSessionId) {
+        checkedGuests.set(storage, { id: resumed.guestSessionId, checkedAt: Date.now() });
+        return save(storage, { ...existing, ...resumed });
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || !["UNAUTHENTICATED", "SESSION_EXPIRED"].includes(error.message)) throw error;
+    }
+    assertCurrent();
+  }
   const accountCase = activeAccountCase(storage);
   if (accountCase) return save(storage, { organizationId: accountCase.organizationId, assessmentSessionId: accountCase.caseId, leadIdempotencyKey: `lead:${crypto.randomUUID()}` });
-  const receipt = await json<{ guestSessionId: string; assessmentSessionId: string }>("/api/v2/guest/session", { method: "POST" });
+  const receipt = await json<{ guestSessionId: string; assessmentSessionId: string; expiresAt?: string }>("/api/v2/guest/session", { method: "POST" }, storage);
+  assertCurrent();
+  checkedGuests.set(storage, { id: receipt.guestSessionId, checkedAt: Date.now() });
   return save(storage, {
     ...receipt,
     leadIdempotencyKey: `lead:${crypto.randomUUID()}`,
@@ -133,9 +155,27 @@ function createIds(source: DurableJourneySource): DurableArtifactIds {
   };
 }
 
-export async function syncDurableJourney(storage: Storage, source: DurableJourneySource) {
-  let context = await ensureSession(storage);
+const syncQueue = new WeakMap<Storage, Promise<unknown>>();
+
+// React effects and consultation can request the same sync concurrently. Keep one
+// write set and prevent a request from restoring a case after a reset or switch.
+export function syncDurableJourney(storage: Storage, source: DurableJourneySource): Promise<DurableJourneyContext> {
+  const identity = workspaceIdentity(storage);
+  const assertCurrent = () => {
+    if (workspaceIdentity(storage) !== identity) throw new Error("workspace_changed");
+  };
+  const next = (syncQueue.get(storage) ?? Promise.resolve()).catch(() => undefined).then(() => {
+    assertCurrent();
+    return syncOnce(storage, source, assertCurrent);
+  });
+  syncQueue.set(storage, next);
+  return next;
+}
+
+async function syncOnce(storage: Storage, source: DurableJourneySource, assertCurrent: () => void) {
+  let context = await ensureSession(storage, assertCurrent);
   const sourceFingerprint = await durableJourneySourceFingerprint(source);
+  assertCurrent();
   if (context.syncedAt && context.artifactIds && context.sourceFingerprint === sourceFingerprint) return context;
   const sourceChanged = context.sourceFingerprint !== sourceFingerprint;
   const artifactIds = sourceChanged || !context.artifactIds ? createIds(source) : context.artifactIds;
@@ -152,28 +192,63 @@ export async function syncDurableJourney(storage: Storage, source: DurableJourne
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ organizationId: context.organizationId, assessmentSessionId: context.assessmentSessionId, ids: artifactIds, ...source }),
-  });
+  }, storage);
+  assertCurrent();
+  const latest = load(storage);
+  if (latest?.sourceFingerprint !== sourceFingerprint || latest.artifactIds?.blueprint !== artifactIds.blueprint) throw new Error("workspace_changed");
   return save(storage, { ...context, artifactIds, syncedAt: new Date().toISOString() });
 }
 
-export async function createDurableConsultation(
+const consultationQueue = new WeakMap<Storage, Promise<unknown>>();
+
+export function createDurableConsultation(
   storage: Storage,
   source: DurableJourneySource,
   contact: { name: string; businessName: string; email: string; phone?: string; urgency: "within_30_days" | "one_to_three_months" | "three_to_six_months" | "exploring" },
 ) {
+  const identity = workspaceIdentity(storage);
+  const assertCurrent = () => {
+    if (workspaceIdentity(storage) !== identity) throw new Error("workspace_changed");
+  };
+  const next = (consultationQueue.get(storage) ?? Promise.resolve()).catch(() => undefined).then(() => {
+    assertCurrent();
+    return consultationOnce(storage, source, contact, assertCurrent);
+  });
+  consultationQueue.set(storage, next);
+  return next;
+}
+
+async function consultationOnce(
+  storage: Storage,
+  source: DurableJourneySource,
+  contact: Parameters<typeof createDurableConsultation>[2],
+  assertCurrent: () => void,
+) {
   let context = await syncDurableJourney(storage, source);
   const artifactIds = context.artifactIds;
   if (!artifactIds) throw new Error("journey_not_synced");
+  const assertSubmissionCurrent = () => {
+    assertCurrent();
+    if (load(storage)?.artifactIds?.blueprint !== artifactIds.blueprint) throw new Error("workspace_changed");
+  };
+  assertSubmissionCurrent();
   if (context.lead) return context;
   const report = context.report ?? await json<ReportArtifact>("/api/v2/reports", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ organizationId: context.organizationId, assessmentSessionId: context.assessmentSessionId, blueprintId: artifactIds.blueprint, locale: "en-MY", acceptedNoteIds: [] }),
-  });
+  }, storage);
+  assertSubmissionCurrent();
   context = save(storage, { ...context, report });
   if (!report.contentSha256) throw new Error("report_not_ready");
-  const contactConsentId = crypto.randomUUID();
-  const reportConsentId = crypto.randomUUID();
-  const requestId = crypto.randomUUID();
+  // Retries must send the same consent and request identities as the lead that
+  // may already have committed before a response was lost.
+  const requestIdentity = async (purpose: string) => {
+    const hash = await sha256(`${context.leadIdempotencyKey}:${purpose}`);
+    return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+  };
+  const [contactConsentId, reportConsentId, requestId] = await Promise.all([
+    requestIdentity("contact"), requestIdentity("report"), requestIdentity("request"),
+  ]);
   const common = {
     assessmentSessionId: context.assessmentSessionId,
     organizationId: context.organizationId,
@@ -187,14 +262,17 @@ export async function createDurableConsultation(
     requestId,
     channel: "web",
   } as const;
+  assertSubmissionCurrent();
   await json("/api/v2/consents", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ organizationId: context.organizationId, consent: { ...common, id: contactConsentId, purpose: "consultation_contact", textHash: await sha256("I consent to MajuPilot using my contact details to respond to this consultation request."), snapshot: { contact, granted: true } } }),
-  });
+  }, storage);
+  assertSubmissionCurrent();
   await json("/api/v2/consents", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ organizationId: context.organizationId, consent: { ...common, id: reportConsentId, purpose: "report_share_with_sales", textHash: await sha256("I consent to MajuPilot sharing this exact Blueprint report with the assigned consultation team."), snapshot: { reportId: report.id, contentSha256: report.contentSha256, granted: true } } }),
-  });
+  }, storage);
+  assertSubmissionCurrent();
   const lead = await json<LeadReceiptV2>("/api/v2/leads", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -211,7 +289,8 @@ export async function createDurableConsultation(
       region: "Malaysia",
       preferredLanguage: "English",
     }),
-  });
+  }, storage);
+  assertSubmissionCurrent();
   return save(storage, { ...context, lead });
 }
 

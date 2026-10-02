@@ -6,8 +6,8 @@ vi.mock("next/link", () => ({ default: ({ children, href, ...props }: React.Anch
 import CopilotPage from "@/app/copilot/page";
 
 describe("MajuPilot application integration", () => {
-  it("exposes Copilot as a first-class product surface without internal phase copy", () => {
-    const html = renderToStaticMarkup(<CopilotPage />);
+  it("exposes Copilot as a first-class product surface without internal phase copy", async () => {
+    const html = renderToStaticMarkup(await CopilotPage({ searchParams: Promise.resolve({}) }));
     expect(html).toContain("MajuPilot Transformation Copilot");
     expect(html).toContain("A practical copilot for the work after your Blueprint.");
     expect(html).toContain("search the public web when current information matters");

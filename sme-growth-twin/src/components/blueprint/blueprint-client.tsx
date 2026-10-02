@@ -3,7 +3,7 @@
 /* eslint-disable react-hooks/set-state-in-effect -- versioned browser records are restored at this client boundary */
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { rebuildCurrentTwin } from "@/core/assessment/rebuild-current-twin";
 import { buildAdvisorReviewContext } from "@/core/blueprint/build-review-context";
@@ -22,6 +22,7 @@ import { loadBlueprint, saveBlueprint } from "@/infrastructure/persistence/local
 import { loadDiagnosticResult } from "@/infrastructure/persistence/local-diagnostic-store";
 import { loadRecommendationResult } from "@/infrastructure/persistence/local-recommendation-store";
 import { loadScenarioComparison } from "@/infrastructure/persistence/local-scenario-store";
+import { workspaceIdentity, workspaceRequest } from "@/infrastructure/persistence/workspace-request";
 import {
   copilotJourneyHref,
   invalidateDurableJourney,
@@ -159,7 +160,7 @@ function SavedReportDownload({ context }: { context: DurableJourneyContext }) {
     let active = true;
     const query = new URLSearchParams({ assessmentSessionId });
     if (organizationId) query.set("organizationId", organizationId);
-    fetch(`/api/v2/reports?${query}`, { cache: "no-store" })
+    fetch(`/api/v2/reports?${query}`, workspaceRequest({ cache: "no-store" }))
       .then(async (response) => {
         if (!response.ok) throw new Error("report_list_unavailable");
         const body = await response.json() as { data: unknown };
@@ -183,7 +184,7 @@ function SavedReportDownload({ context }: { context: DurableJourneyContext }) {
       const query = new URLSearchParams();
       if (organizationId) query.set("organizationId", organizationId);
       const suffix = query.size ? `?${query}` : "";
-      const response = await fetch(`/api/v2/reports/${encodeURIComponent(report.id)}/download${suffix}`, { cache: "no-store" });
+      const response = await fetch(`/api/v2/reports/${encodeURIComponent(report.id)}/download${suffix}`, workspaceRequest({ cache: "no-store" }));
       if (!response.ok) throw new Error("report_download_unavailable");
       const body = await response.json() as { data: unknown };
       const download = signedReportDownloadSchema.parse(body.data);
@@ -283,6 +284,12 @@ export function BlueprintView({
   const [syncState, setSyncState] = useState<DurableSyncState>(blueprint ? "saving" : "idle");
   const [syncContext, setSyncContext] = useState<DurableJourneyContext>();
   const [syncAttempt, setSyncAttempt] = useState(0);
+  const generationController = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => {
+    const controller = generationController.current;
+    generationController.current = undefined;
+    controller?.abort();
+  }, []);
   const [statuses, setStatuses] = useState<Record<string, AdvisorStatus>>(() =>
     initialBlueprint ? originStatuses(initialBlueprint) : readyStatuses(),
   );
@@ -326,11 +333,14 @@ export function BlueprintView({
   }, [assessment, blueprint, sources, syncAttempt]);
 
   const generate = async () => {
+    if (generationController.current) return;
+    const identity = workspaceIdentity(localStorage);
     setBusy(true);
     setGenerationFailed(false);
     setNotice(undefined);
     setStatuses(reviewingStatuses());
     const controller = new AbortController();
+    generationController.current = controller;
     const timeout = window.setTimeout(() => controller.abort(), 20_000);
 
     try {
@@ -358,6 +368,7 @@ export function BlueprintView({
         fallbackUsed = true;
       }
 
+      if (generationController.current !== controller || workspaceIdentity(localStorage) !== identity) return;
       const next = buildBlueprint(
         { ...sources, panel },
         { id: () => makeId("blueprint"), now: () => new Date().toISOString() },
@@ -379,6 +390,7 @@ export function BlueprintView({
       setNotice("The Blueprint could not be saved safely. Upstream records were not changed. Retry when ready.");
     } finally {
       window.clearTimeout(timeout);
+      generationController.current = undefined;
       setBusy(false);
     }
   };

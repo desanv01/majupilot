@@ -7,11 +7,11 @@ import { DemoResetControl } from "@/components/demo/demo-reset-control";
 
 import type { DemoSession } from "@/infrastructure/persistence/project-storage";
 import {
-  clearKnownProjectStorage,
   DEMO_SESSION_CHANGED_EVENT,
   loadDemoSession,
   RESET_STATUS_SESSION_KEY,
 } from "@/infrastructure/persistence/project-storage";
+import { resetDemoWorkspace } from "@/infrastructure/persistence/demo-workspace";
 
 export function DemoBanner() {
   const router = useRouter();
@@ -29,7 +29,7 @@ export function DemoBanner() {
   const reset = () => {
     const confirmation =
       "MajuPilot demonstration data was reset. Other browser storage was not changed.";
-    clearKnownProjectStorage(localStorage, sessionStorage);
+    resetDemoWorkspace(localStorage, sessionStorage);
     sessionStorage.setItem(RESET_STATUS_SESSION_KEY, confirmation);
     window.dispatchEvent(new Event(DEMO_SESSION_CHANGED_EVENT));
     setDemo(undefined);

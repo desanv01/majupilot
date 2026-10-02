@@ -12,6 +12,7 @@ import { DEMO_SESSION_STORAGE_KEY } from "@/infrastructure/persistence/project-s
 import { loadDurableJourney, DURABLE_JOURNEY_STORAGE_KEY } from "@/infrastructure/persistence/durable-journey-client";
 import { ACCOUNT_CASE_CHANGED_EVENT } from "@/infrastructure/persistence/account-case-scope";
 import { ACCOUNT_CASE_LOCAL_CHANGE_EVENT } from "@/infrastructure/persistence/account-case-events";
+import { resetDemoWorkspace } from "@/infrastructure/persistence/demo-workspace";
 
 type CaseListItem = { id: string; businessName: string; state: string; progress: string; revision: number; updatedAt: string };
 type Envelope<T> = { data?: T; error?: { code: string } };
@@ -73,6 +74,7 @@ export function AccountCasesClient({ initialAuthError, initialAuthCallback = fal
 
   useEffect(() => {
     const openAccount = async () => {
+      resetDemoWorkspace(localStorage, sessionStorage);
       const client = createBrowserSupabaseClient();
       if (initialAuthCallback) {
         const fragment = new URLSearchParams(window.location.hash.slice(1));

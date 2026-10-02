@@ -1,5 +1,7 @@
 "use client";
 
+import { workspaceRequest } from "@/infrastructure/persistence/workspace-request";
+
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 import Link from "next/link";
@@ -36,7 +38,7 @@ function formatBytes(bytes: number) {
 }
 
 async function api<T>(url: string, init?: RequestInit) {
-  const result = await fetch(url, { ...init, cache: "no-store" });
+  const result = await fetch(url, workspaceRequest({ ...init, cache: "no-store" }));
   const body = await result.json().catch(() => undefined) as { data?: T } & ApiError | undefined;
   if (!result.ok || body?.data === undefined) throw new Error(body?.error?.code ?? `request_${result.status}`);
   return body.data;
