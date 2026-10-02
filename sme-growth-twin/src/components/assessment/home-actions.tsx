@@ -7,24 +7,20 @@ import { useEffect, useState } from "react";
 
 import { DemoResetControl } from "@/components/demo/demo-reset-control";
 import { activeAccountCase, saveActiveAccountCase } from "@/infrastructure/persistence/account-case-client";
-import { ACCOUNT_CASE_STORAGE_KEY } from "@/infrastructure/persistence/account-case-scope";
+import { openDemoWorkspace, resetDemoWorkspace, hasParkedAssessment } from "@/infrastructure/persistence/demo-workspace";
 import { createBrowserSupabaseClient } from "@/infrastructure/supabase/browser";
 
 import {
-  createGoldenAssessmentDraft,
   GOLDEN_FIXTURES,
   type GoldenFixture,
 } from "@/domain-packs/exabytes/golden-fixtures";
 import {
   loadAssessmentDraft,
-  saveAssessmentDraft,
 } from "@/infrastructure/persistence/local-assessment-store";
 import {
-  clearKnownProjectStorage,
   DEMO_SESSION_CHANGED_EVENT,
   loadDemoSession,
   RESET_STATUS_SESSION_KEY,
-  saveDemoSession,
 } from "@/infrastructure/persistence/project-storage";
 
 const demoPathNotes: Record<GoldenFixture["id"], string> = {
@@ -65,31 +61,16 @@ export function DemoLauncher() {
     setLoadingFixtureId(fixture.id);
     setStatus(`Loading ${fixture.label} as fictional demonstration data.`);
     try {
-      if (loadAssessmentDraft(localStorage).status === "ok" && !loadDemoSession(localStorage)) {
-        setLoadingFixtureId(null);
-        setStatus("Finish or save your current assessment before opening a fictional demo case.");
-        return;
+      if (activeAccountCase(localStorage)) {
+        try { await saveActiveAccountCase(); }
+        catch {
+          setLoadingFixtureId(null);
+          setStatus("Your account case could not be saved. Your work is still here; retry before opening a demo.");
+          return;
+        }
       }
-      if (activeAccountCase(localStorage)) await saveActiveAccountCase();
-      localStorage.removeItem(ACCOUNT_CASE_STORAGE_KEY);
-      clearKnownProjectStorage(localStorage, sessionStorage);
-      const sessionId = `assessment_demo_${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
-      const loadedAt = new Date().toISOString();
-      saveAssessmentDraft(
-        localStorage,
-        createGoldenAssessmentDraft(fixture, sessionId, loadedAt),
-      );
-      saveDemoSession(localStorage, {
-        schemaVersion: "1.0.0",
-        fixtureId: fixture.id,
-        fixtureVersion: fixture.fixtureVersion,
-        label: fixture.label,
-        fictional: true,
-        assessmentSessionId: sessionId,
-        loadedAt,
-      });
+      openDemoWorkspace(localStorage, sessionStorage, fixture);
       setHasProjectRecords(true);
-      window.dispatchEvent(new Event(DEMO_SESSION_CHANGED_EVENT));
       router.push("/assessment/review");
     } catch {
       setLoadingFixtureId(null);
@@ -100,8 +81,7 @@ export function DemoLauncher() {
 
   const reset = () => {
     try {
-      clearKnownProjectStorage(localStorage, sessionStorage);
-      window.dispatchEvent(new Event(DEMO_SESSION_CHANGED_EVENT));
+      resetDemoWorkspace(localStorage, sessionStorage);
       setHasProjectRecords(false);
       setStatus("MajuPilot demonstration data was reset. Other browser storage was not changed.");
     } catch {
@@ -117,7 +97,7 @@ export function DemoLauncher() {
             <p className="eyebrow">Fictional demonstration cases</p>
             <h2 id="demo-title">Explore the complete journey with sample businesses.</h2>
             <p id="demo-disclosure">
-              Loading a case replaces only this device&apos;s saved demonstration records.
+              Your current assessment is kept on this device while you explore a demo. Resetting the demo restores it.
               It does not create consent or a consultation lead.
             </p>
           </div>
@@ -173,9 +153,9 @@ export function HomePrimaryActions() {
 
   useEffect(() => {
     void Promise.resolve().then(() => createBrowserSupabaseClient().auth.getUser()).then(({ data }) => setSignedIn(Boolean(data.user))).catch(() => undefined);
-    try {
+    const refresh = () => { try {
       const storedDraft = loadAssessmentDraft(localStorage);
-      setResume(storedDraft.status === "ok");
+      setResume(storedDraft.status === "ok" || hasParkedAssessment(localStorage));
       setAccountCaseActive(Boolean(activeAccountCase(localStorage)));
       if (storedDraft.status === "discarded") {
         setStatus("A saved assessment could not be restored and was safely removed. You can start again.");
@@ -188,18 +168,21 @@ export function HomePrimaryActions() {
       }
     } catch {
       setStatus("Saved assessment tools are unavailable in this browser. You can still start a new assessment.");
-    }
+    } };
+    refresh();
+    window.addEventListener(DEMO_SESSION_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(DEMO_SESSION_CHANGED_EVENT, refresh);
   }, []);
 
   return (
     <>
       <div className="home-actions">
-        <Link className="button primary home-primary-action" href={signedIn || accountCaseActive ? "/cases" : "/assessment?new=1"}>
+        <Link className="button primary home-primary-action" href={signedIn || accountCaseActive ? "/cases" : "/assessment?new=1"} onClick={() => resetDemoWorkspace(localStorage, sessionStorage)}>
           Start assessment
         </Link>
         <Link className="button secondary home-account-action" href="/cases">{signedIn ? "Saved cases" : "Sign in or create account"}</Link>
         {resume ? (
-          <Link className="button secondary home-resume-action" href="/assessment">
+          <Link className="button secondary home-resume-action" href="/assessment" onClick={() => { if (hasParkedAssessment(localStorage)) resetDemoWorkspace(localStorage, sessionStorage); }}>
             Resume assessment
           </Link>
         ) : null}

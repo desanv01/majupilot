@@ -1,6 +1,5 @@
 "use client";
 
-/* eslint-disable react-hooks/set-state-in-effect -- the source chain and session receipt are browser-owned */
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useRef, useState } from "react";
@@ -22,8 +21,10 @@ import { loadDiagnosticResult } from "@/infrastructure/persistence/local-diagnos
 import { loadRecommendationResult } from "@/infrastructure/persistence/local-recommendation-store";
 import { clearKnownProjectStorage } from "@/infrastructure/persistence/project-storage";
 import { activeAccountCase } from "@/infrastructure/persistence/account-case-scope";
+import { resetDemoWorkspace } from "@/infrastructure/persistence/demo-workspace";
+import { loadCurrentDurableJourney } from "@/infrastructure/persistence/current-durable-journey";
 import { loadScenarioComparison } from "@/infrastructure/persistence/local-scenario-store";
-import { createDurableConsultation, loadDurableJourney } from "@/infrastructure/persistence/durable-journey-client";
+import { createDurableConsultation } from "@/infrastructure/persistence/durable-journey-client";
 
 const urgencyLabels = {
   within_30_days: "Within 30 days",
@@ -189,6 +190,7 @@ export function ConsultationView({ journey, blueprint: suppliedBlueprint, initia
   };
 
   const startNew = () => {
+    resetDemoWorkspace(localStorage, sessionStorage);
     if (activeAccountCase(localStorage)) { router.push("/cases"); return; }
     clearKnownProjectStorage(localStorage, sessionStorage);
     router.push("/assessment?new=1");
@@ -258,6 +260,7 @@ export function ConsultationClient() {
   const [loaded, setLoaded] = useState<{ journey: ConsultationJourney; receipt?: LeadReceiptV2 }>();
 
   useEffect(() => {
+    let active = true;
     const assessment = loadAssessmentDraft(localStorage);
     if (assessment.status !== "ok" || assessment.draft.status !== "ready_for_review") { router.replace("/blueprint"); return; }
     try {
@@ -270,12 +273,12 @@ export function ConsultationClient() {
       if (comparison.status !== "ok") { router.replace("/blueprint"); return; }
       const blueprint = loadBlueprint(localStorage, twin, diagnostic.result, recommendations.result, comparison.result);
       if (blueprint.status !== "ok") { router.replace("/blueprint"); return; }
-      const durable = loadDurableJourney(localStorage);
-      setLoaded({
-        journey: { draft: assessment.draft, twin, diagnostic: diagnostic.result, recommendations: recommendations.result, comparison: comparison.result, blueprint: blueprint.result },
-        receipt: durable?.lead,
+      const journey = { draft: assessment.draft, twin, diagnostic: diagnostic.result, recommendations: recommendations.result, comparison: comparison.result, blueprint: blueprint.result };
+      void loadCurrentDurableJourney(localStorage).then((durable) => {
+        if (active) setLoaded({ journey, receipt: durable?.lead });
       });
     } catch { router.replace("/blueprint"); }
+    return () => { active = false; };
   }, [router]);
 
   if (!loaded) return <><ProductHeader current="consultation" /><main id="main-content" className="consultation-loading" aria-live="polite"><div className="consultation-loading-shape" aria-hidden="true"><span /><span /><span /></div><p className="eyebrow">Blueprint handoff</p><h1>Validating your current Blueprint.</h1><p>Checking the saved source chain before contact details are requested.</p></main></>;

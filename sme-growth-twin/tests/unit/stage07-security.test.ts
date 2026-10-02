@@ -130,8 +130,9 @@ describe("Stage 07 scoped reset", () => {
     );
     const resetStart = source.indexOf("const reset = () =>");
     const resetBody = source.slice(resetStart, source.indexOf("\n  return (", resetStart));
-    expect(resetBody).toContain("clearKnownProjectStorage(localStorage, sessionStorage)");
-    expect(resetBody).toContain("window.dispatchEvent(new Event(DEMO_SESSION_CHANGED_EVENT))");
+    expect(resetBody).toContain("resetDemoWorkspace(localStorage, sessionStorage)");
+    const workspace = await readFile(path.resolve(process.cwd(), "src/infrastructure/persistence/demo-workspace.ts"), "utf8");
+    expect(workspace).toContain("window.dispatchEvent(new Event(DEMO_SESSION_CHANGED_EVENT))");
   });
 
   it("keeps the browser gate local by default and skips local startup for an explicit external URL", async () => {

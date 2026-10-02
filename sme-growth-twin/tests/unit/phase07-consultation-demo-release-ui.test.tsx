@@ -49,7 +49,7 @@ describe("Phase 07 consultation, demo, and release UI", () => {
     expect(consultation).toContain('aria-busy={busy}');
     expect(reset).toContain("showModal()");
     expect(reset).toContain("Reset known records");
-    expect(home).toContain("clearKnownProjectStorage(localStorage, sessionStorage)");
+    expect(home).toContain("resetDemoWorkspace(localStorage, sessionStorage)");
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
     expect(css).toContain(".demo-reset-dialog::backdrop");
     expect(css).toContain("min-height: 50px");

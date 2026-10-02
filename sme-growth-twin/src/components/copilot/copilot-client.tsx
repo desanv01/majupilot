@@ -9,6 +9,7 @@ import { ProductHeader } from "@/components/navigation/product-header";
 import type { CopilotMessage } from "@/domain/copilot";
 import { loadCurrentDurableJourney } from "@/infrastructure/persistence/current-durable-journey";
 import { matchesCopilotDeepLink } from "@/infrastructure/persistence/durable-journey-client";
+import { workspaceIdentity, workspaceRequest } from "@/infrastructure/persistence/workspace-request";
 
 import {
   CopilotApiError,
@@ -92,7 +93,7 @@ function TechnicalDiagnostic({ requestId }: { requestId: string }) {
 }
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { ...init, cache: "no-store" });
+  const response = await fetch(url, workspaceRequest({ ...init, cache: "no-store" }));
   const body = await response.json().catch(() => undefined) as { data?: T; error?: CopilotApiErrorBody } | undefined;
   if (!response.ok || body?.data === undefined) {
     const error = body?.error;
@@ -102,7 +103,7 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 async function streamTurn(url: string, body: Record<string, unknown>, signal: AbortSignal, onEvent: (event: StreamEvent) => void) {
-  const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" }, body: JSON.stringify(body), cache: "no-store", signal });
+  const response = await fetch(url, workspaceRequest({ method: "POST", headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" }, body: JSON.stringify(body), cache: "no-store", signal }));
   if (!response.ok || !response.body) {
     const payload = await response.json().catch(() => undefined) as { error?: CopilotApiErrorBody } | undefined;
     const error = payload?.error;
@@ -152,18 +153,23 @@ export function CopilotClient({ requestedAssessmentSessionId, requestedBlueprint
   const manualPauseRef = useRef(false);
   const touchYRef = useRef<number | null>(null);
   const [showLatest, setShowLatest] = useState(false);
-  const openingRef = useRef(false);
   const abortRef = useRef<AbortController | undefined>(undefined);
 
   useEffect(() => {
-    if (openingRef.current) return;
-    openingRef.current = true;
+    let active = true;
+    const identity = workspaceIdentity(localStorage);
+    const current = () => active && workspaceIdentity(localStorage) === identity;
     const openWorkspace = async () => {
       try {
         const query = new URLSearchParams(window.location.search);
+        setAvailable(false);
+        setSession(undefined);
+        setOpenFailure(undefined);
+        setReady(false);
         const linkedAssessmentSessionId = requestedAssessmentSessionId ?? query.get("assessmentSessionId") ?? undefined;
         const linkedBlueprintId = requestedBlueprintId ?? query.get("blueprintId") ?? undefined;
         const context = await loadCurrentDurableJourney(localStorage);
+        if (!current()) return;
         const artifactIds = context?.artifactIds;
         if (!context || !artifactIds) { setStatus("Complete and sync the current Blueprint before opening Copilot."); return; }
         if (!matchesCopilotDeepLink(context, { assessmentSessionId: linkedAssessmentSessionId, blueprintId: linkedBlueprintId })) {
@@ -171,28 +177,33 @@ export function CopilotClient({ requestedAssessmentSessionId, requestedBlueprint
           setOpenFailure({ message: "Return to the current Blueprint and continue from its Copilot action.", requestId: null, retryable: false });
           return;
         }
-        setAvailable(true);
+        setSession(undefined);
+        setOpenFailure(undefined);
         setOrganizationId(context.organizationId);
         const [healthResult, sessionResult] = await Promise.allSettled([
           api<HealthResponse>("/api/v2/copilot/status?detail=safe"),
           api<Session>("/api/v2/copilot/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId: context.organizationId, assessmentSessionId: context.assessmentSessionId, businessTwinId: artifactIds.businessTwin, blueprintId: artifactIds.blueprint, idempotencyKey: `copilot:${context.assessmentSessionId}:${artifactIds.blueprint}` }) }),
         ]);
+        if (!current()) return;
         if (sessionResult.status === "rejected") throw sessionResult.reason;
         const nextSession = sessionResult.value;
         const history = await api<HistoryResponse>(`/api/v2/copilot/sessions/${nextSession.id}/messages${context.organizationId ? `?organizationId=${context.organizationId}` : ""}`);
+        if (!current()) return;
         setSession(nextSession);
+        setAvailable(true);
         setMessages(restoreCopilotMessages(history.messages));
         if (healthResult.status === "fulfilled") setStatus(healthResult.value.liveAvailable ? "Live AI, private evidence tools, and bounded public web search are available." : "Copilot is using its safe deterministic response path.");
         else setStatus(copilotErrorPresentation(healthResult.reason).message);
       } catch (error) {
+        if (!current()) return;
         const presentation = copilotErrorPresentation(error);
         setStatus(presentation.message);
         setOpenFailure({ message: presentation.message, requestId: presentation.requestId, retryable: presentation.retryable });
         setAvailable(false);
-      } finally { setReady(true); }
+      } finally { if (current()) setReady(true); }
     };
     void openWorkspace();
-    return () => abortRef.current?.abort();
+    return () => { active = false; abortRef.current?.abort(); };
   }, [requestedAssessmentSessionId, requestedBlueprintId]);
 
   useEffect(() => {

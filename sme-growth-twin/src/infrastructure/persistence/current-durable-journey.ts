@@ -1,5 +1,6 @@
 import { rebuildCurrentTwin } from "@/core/assessment/rebuild-current-twin";
 import { activeAccountCase } from "./account-case-scope";
+import { workspaceIdentity } from "./workspace-request";
 
 import { loadAssessmentDraft } from "./local-assessment-store";
 import { loadBlueprint } from "./local-blueprint-store";
@@ -13,6 +14,7 @@ import {
 } from "./durable-journey-client";
 
 export async function loadCurrentDurableJourney(storage: Storage): Promise<DurableJourneyContext | undefined> {
+  const identity = workspaceIdentity(storage);
   const context = loadDurableJourney(storage);
   if (!context?.syncedAt || !context.artifactIds || !context.sourceFingerprint) return undefined;
   const accountCase = activeAccountCase(storage);
@@ -38,7 +40,7 @@ export async function loadCurrentDurableJourney(storage: Storage): Promise<Durab
       comparison: comparison.result,
       blueprint: blueprint.result,
     });
-    return fingerprint === context.sourceFingerprint ? context : undefined;
+    return workspaceIdentity(storage) === identity && fingerprint === context.sourceFingerprint ? context : undefined;
   } catch {
     return undefined;
   }

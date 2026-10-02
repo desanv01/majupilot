@@ -20,6 +20,7 @@ import { loadCurrentDurableJourney } from "@/infrastructure/persistence/current-
 import { immutableInsertMatches } from "@/infrastructure/persistence/immutable-insert";
 import {
   copilotJourneyHref,
+  createDurableConsultation,
   DURABLE_JOURNEY_STORAGE_KEY,
   invalidateDurableJourney,
   matchesCopilotDeepLink,
@@ -184,5 +185,80 @@ describe("Phase 2 Blueprint to Copilot handoff", () => {
     expect(matchesCopilotDeepLink({ guestSessionId: owner.guestSessionId, assessmentSessionId: input.assessmentSessionId, artifactIds: { answers: {}, businessTwin: input.businessTwinId, evidence: [], diagnostic: uuid(35), recommendations: uuid(36), scenarioComparison: uuid(37), scenarioRevision: uuid(38), blueprint: input.blueprintId }, syncedAt: now, sourceFingerprint: "b".repeat(64), leadIdempotencyKey: "lead:phase2" }, input)).toBe(true);
     expect(() => assertCopilotSessionBinding({ ...row, guest_session_id: uuid(39) }, owner, input)).toThrowError(PersistenceError);
     expect(() => assertCopilotSessionBinding(row, owner, { ...input, blueprintId: uuid(40) })).toThrowError("IDEMPOTENCY_CONFLICT");
+  });
+
+  it("serializes concurrent handoffs into one guest session and immutable write set", async () => {
+    const { storage } = memoryStorage();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ guestSessionId: uuid(41), assessmentSessionId: uuid(42) }, 201))
+      .mockResolvedValue(response({ saved: true }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+    const [a, b, c] = await Promise.all(Array.from({ length: 3 }, () => syncDurableJourney(asStorage(storage), source)));
+    expect(a).toEqual(b); expect(b).toEqual(c);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers an expired saved guest workspace rather than claiming its old sync is ready", async () => {
+    const { storage } = memoryStorage();
+    const initialFetch = vi.fn()
+      .mockResolvedValueOnce(response({ guestSessionId: uuid(61), assessmentSessionId: uuid(62) }, 201))
+      .mockResolvedValueOnce(response({ saved: true }, 201));
+    vi.stubGlobal("fetch", initialFetch);
+    const initial = await syncDurableJourney(asStorage(storage), source);
+    const restored = memoryStorage().storage as Storage;
+    restored.setItem(DURABLE_JOURNEY_STORAGE_KEY, JSON.stringify(initial));
+    const recoveryFetch = vi.fn()
+      .mockResolvedValueOnce(Response.json({ error: { code: "SESSION_EXPIRED" } }, { status: 401 }))
+      .mockResolvedValueOnce(response({ guestSessionId: uuid(63), assessmentSessionId: uuid(64) }, 201))
+      .mockResolvedValueOnce(response({ saved: true }, 201));
+    vi.stubGlobal("fetch", recoveryFetch);
+    const recovered = await syncDurableJourney(restored, source);
+    expect(recoveryFetch.mock.calls[0][1]?.method).toBe("PUT");
+    expect(recovered.assessmentSessionId).toBe(uuid(64));
+    expect(recovered.artifactIds?.blueprint).not.toBe(initial.artifactIds?.blueprint);
+    expect(recovered.syncedAt).toBeTruthy();
+  });
+
+  it("does not repopulate local storage after a case is reset during sync", async () => {
+    const { storage } = memoryStorage();
+    saveAssessmentDraft(storage, draft);
+    let complete!: (response: Response) => void;
+    let started!: () => void;
+    const pending = new Promise<void>((resolve) => { started = resolve; });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(response({ guestSessionId: uuid(41), assessmentSessionId: uuid(42) }, 201))
+      .mockImplementationOnce(() => { started(); return new Promise<Response>((resolve) => { complete = resolve; }); }));
+    const sync = syncDurableJourney(asStorage(storage), source);
+    const rejected = expect(sync).rejects.toThrow("workspace_changed");
+    await pending;
+    storage.removeItem(DURABLE_JOURNEY_STORAGE_KEY);
+    storage.removeItem("sme-growth-twin:assessment-draft:1.0.0");
+    complete(response({ saved: true }));
+    await rejected;
+    expect(storage.getItem(DURABLE_JOURNEY_STORAGE_KEY)).toBeNull();
+  });
+
+  it("retries a lost consultation response with the exact consent and lead payload", async () => {
+    const { storage } = memoryStorage();
+    const leads: unknown[] = []; const consents: unknown[] = [];
+    let leadAttempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v2/guest/session") return response({ guestSessionId: uuid(41), assessmentSessionId: uuid(42) }, 201);
+      if (url === "/api/v2/journey/sync") return response({ saved: true }, 201);
+      if (url === "/api/v2/reports") return response({ id: uuid(43), contentSha256: "a".repeat(64) }, 201);
+      if (url === "/api/v2/consents") { consents.push(JSON.parse(String(init?.body))); return response({ recorded: true }, 201); }
+      if (url === "/api/v2/leads") {
+        leads.push(JSON.parse(String(init?.body)));
+        if (++leadAttempts === 1) throw new Error("response_lost_after_commit");
+        return response({ receiptId: uuid(44), leadId: uuid(45), replayed: true }, 201);
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    }));
+    const contact = { name: "Synthetic Tester", businessName: "Synthetic Company", email: "test@example.com", urgency: "exploring" as const };
+    await expect(createDurableConsultation(asStorage(storage), source, contact)).rejects.toThrow("response_lost_after_commit");
+    const retry = await createDurableConsultation(asStorage(storage), source, contact);
+    expect(retry.lead?.replayed).toBe(true);
+    expect(leads).toHaveLength(2); expect(leads[1]).toEqual(leads[0]);
+    expect(consents[2]).toEqual(consents[0]); expect(consents[3]).toEqual(consents[1]);
   });
 });
