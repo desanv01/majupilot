@@ -227,6 +227,23 @@ try {
   if (functionalOnly) {
     await viewport(1440, 1000);
     await resetViaBanner();
+    // The three fixture stories exhaust the intentional per-process review budget.
+    // Start the independent account story with a fresh local server, without
+    // relaxing the production limiter or altering the saved browser workspace.
+    if (!configuredBaseUrl) {
+      stopTree(server);
+      server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--port", String(appPort)], {
+        cwd: process.cwd(), env: localEnv, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+      });
+      server.stdout.on("data", (value) => { serverOutput += value.toString(); });
+      server.stderr.on("data", (value) => { serverOutput += value.toString(); });
+      let accountServerReady = false;
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        try { if ((await fetch(baseUrl)).ok) { accountServerReady = true; break; } } catch {}
+        await wait(500);
+      }
+      if (!accountServerReady) throw new Error("Independent account test server did not start");
+    }
     const email = `functional-${crypto.randomUUID()}@example.test`;
     const password = `Synthetic-${crypto.randomUUID()}`;
     const created = await admin.auth.admin.createUser({ email, password, email_confirm: true });
