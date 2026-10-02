@@ -46,7 +46,7 @@
     "@supabase/supabase-js": "2.116.0",
     "ai": "7.0.111",
     "mammoth": "1.12.3",
-    "next": "16.3.5",
+    "next": "16.3.8",
     "pdfjs-dist": "6.3.289",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -60,7 +60,7 @@
     "@types/react-dom": "19.3.0",
     "axe-core": "4.10.3",
     "eslint": "9.39.5",
-    "eslint-config-next": "16.3.5",
+    "eslint-config-next": "16.3.8",
     "supabase": "2.117.0",
     "typescript": "6.0.3",
     "vitest": "5.0.1"
