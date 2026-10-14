@@ -1,6 +1,6 @@
 # MajuPilot — AI Horizon Hackathon 2026
 
-Developed for **AI Horizon Solution Challenge 2026 (AI Horizon Hackathon 2026)**, in the **AI SME Digital Growth Advisor** challenge track with **Exabytes**, as part of the event at Penang Waterfront Convention Centre (PWCC).
+Developed for **AI Horizon Solution Challenge 2026 (AI Horizon Hackathon 2026)**, in the **AI SME Digital Growth Advisor** challenge track with **Exabytes**.
 
 MajuPilot is an evidence-backed Digital and AI Transformation advisor for Malaysian SMEs and technology-advisory teams. It turns a structured discovery interview into an inspectable Business Twin, deterministic diagnosis, capability-first recommendations, transformation scenarios, an advisor-reviewed Blueprint, a canonical private PDF, and a consented consultation handoff.
 
